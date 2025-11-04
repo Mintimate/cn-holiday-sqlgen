@@ -1,2 +1,3 @@
 pandas>=2.2
-chinesecalendar>=1.9.1
+chinesecalendar>=1.11.0
+pyyaml>=6.0
