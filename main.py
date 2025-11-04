@@ -1,146 +1,308 @@
-# -*- coding: utf-8 -*
+# -*- coding: utf-8 -*-
 """
-使用chinese_calendar对一年的日期进行标识
-需要注意：新的一年需要前一年的11月才会更新（如：2023年的数据，需要在2022年11月以后才可获取到）
+中国节假日SQL生成器
 
-@Author: Mintimate
-@Date: 20240726
+本程序基于 chinese_calendar 库自动识别中国法定节假日、工作日、周末和补班日，
+并生成标准的数据库 INSERT 语句和 CSV 数据文件，用于工作日历系统。
+
+主要功能：
+    - 自动识别工作日、周末、节假日和补班日
+    - 生成 SQL INSERT 语句（支持 Oracle 等数据库）
+    - 导出 CSV 格式数据文件
+    - 支持 YAML 配置文件管理
+    - 完善的日志输出和错误处理
+
+使用方法：
+    1. 配置 config.yaml 文件中的参数
+    2. 运行: python main.py
+    3. 在指定目录下获取生成的 .sql 和 .csv 文件
+
+注意事项：
+    - 需要在公网环境运行以同步最新节假日数据
+    - 次年数据通常在前一年11月后可用（如：2025年数据需在2024年11月后获取）
+    - 建议定期更新 chinesecalendar 库: pip install -U chinesecalendar
+
+Author: Mintimate
+Created: 2024-07-26
+Updated: 2025-11-04
+Version: 2.0
+License: MIT
 """
+
 import datetime
+import logging
 import os
-from enum import Enum
 import re
+from dataclasses import dataclass
+from pathlib import Path
+from typing import List, Tuple
+
 import chinese_calendar as calendar
 import pandas as pd
-
-# 生成SQL脚本的目标数据库
-TARGET_TABLE = "WORK_CALENDAR"
-# 脚本生成的目标年份
-TARGET_YEAR = 2024
-# 生成代码的位置
-TARGET_SAVE_PATH = "work_calendar"
+import yaml
 
 
-class DATATYPE(Enum):
-    """
-    日期类型枚举类
-    """
-    WORKDAY = ("0", "普通工作日")
-    WEEKEND = ("3", "普通周末")
-    HOLIDAY = ("1", "节日假期")
-    WORKING_HOLIDAY = ("2", "节日补班")
-
-    def __init__(self, code: str, description: str):
-        self.code = code
-        self.description = description
-
-    @property
-    def code(self) -> str:
-        return self._code
-
-    @code.setter
-    def code(self, value: str):
-        self._code = value
-
-    @property
-    def description(self) -> str:
-        return self._description
-
-    @description.setter
-    def description(self, value: str):
-        self._description = value
+# 配置日志
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 
 
-def check_dir_exist(dir_path, file_name=None):
-    """
-    判断目录是否存在，不存在则创建并返回绝对路径
-    """
-    if not os.path.exists(dir_path):
-        os.makedirs(dir_path)
-    if not os.path.isabs(dir_path):
-        # 目录为相对路径，那么转换为绝对路径
-        dir_path = os.path.abspath(dir_path)
-    if file_name is not None:
-        dir_path = os.path.join(dir_path, file_name)
-    return dir_path
+@dataclass
+class DateTypeConfig:
+    """日期类型配置数据类"""
+    code: str
+    description: str
 
 
-# 得到一年中所有的日期
-def get_whole_year(year=TARGET_YEAR):
-    """
-    获取一年内所有的日期
-    :param year: 获取的年
-    :return: 日期数组
-    """
-    begin = datetime.date(year, 1, 1)
-    now = begin
-    end = datetime.date(year, 12, 31)
-    delta = datetime.timedelta(days=1)
-    days = []
-    while now <= end:
-        days.append(now.strftime("%Y-%m-%d"))
-        now += delta
-    return days
+@dataclass
+class Config:
+    """应用配置数据类"""
+    table_name: str
+    target_year: int
+    save_path: str
+    date_types: dict
 
 
-# 判断日期
-def judge_date_type(judge_date):
-    """
-    判断日期的类型
-    :param judge_date:
-    :return: 判断的类型；如果是假期有关，附带假期备注
-    """
-    date = datetime.datetime.strptime(judge_date, '%Y-%m-%d').date()
-    if calendar.is_holiday(date):
-        print("{}是节假日".format(judge_date))
-        on_holiday, holiday_name = calendar.get_holiday_detail(date)
-        # 判断是否为节日（否：周末；是：节日）
-        if holiday_name is not None:
-            return DATATYPE.HOLIDAY.code + "-" + str(holiday_name)
+class ConfigLoader:
+    """配置加载器"""
+    
+    @staticmethod
+    def load_config(config_path: str = "config.yaml") -> Config:
+        """
+        加载配置文件
+        
+        Args:
+            config_path: 配置文件路径
+            
+        Returns:
+            Config: 配置对象
+        """
+        try:
+            with open(config_path, 'r', encoding='utf-8') as f:
+                config_data = yaml.safe_load(f)
+            
+            return Config(
+                table_name=config_data['database']['table_name'],
+                target_year=config_data['generation']['target_year'],
+                save_path=config_data['generation']['save_path'],
+                date_types=config_data['date_types']
+            )
+        except FileNotFoundError:
+            logger.error(f"配置文件 {config_path} 不存在")
+            raise
+        except KeyError as e:
+            logger.error(f"配置文件缺少必要字段: {e}")
+            raise
+        except yaml.YAMLError as e:
+            logger.error(f"配置文件格式错误: {e}")
+            raise
+
+
+class DateTypeJudge:
+    """日期类型判断器"""
+    
+    def __init__(self, config: Config):
+        """
+        初始化日期类型判断器
+        
+        Args:
+            config: 配置对象
+        """
+        self.config = config
+        self.workday_code = config.date_types['workday']['code']
+        self.weekend_code = config.date_types['weekend']['code']
+        self.holiday_code = config.date_types['holiday']['code']
+        self.working_holiday_code = config.date_types['working_holiday']['code']
+    
+    def judge_date_type(self, date_str: str) -> Tuple[str, str]:
+        """
+        判断日期的类型
+        
+        Args:
+            date_str: 日期字符串，格式为 YYYY-MM-DD
+            
+        Returns:
+            Tuple[str, str]: (日期类型代码, 备注信息)
+        """
+        date = datetime.datetime.strptime(date_str, '%Y-%m-%d').date()
+        
+        if calendar.is_holiday(date):
+            on_holiday, holiday_name = calendar.get_holiday_detail(date)
+            if holiday_name is not None:
+                logger.info(f"{date_str} 是节假日: {holiday_name}")
+                return self.holiday_code, str(holiday_name)
+            else:
+                logger.info(f"{date_str} 是普通周末")
+                return self.weekend_code, ""
+        elif calendar.is_workday(date):
+            on_holiday, holiday_name = calendar.get_holiday_detail(date)
+            if holiday_name is not None:
+                logger.info(f"{date_str} 是补班日: {holiday_name}")
+                return self.working_holiday_code, str(holiday_name)
+            else:
+                return self.workday_code, ""
         else:
-            return DATATYPE.WEEKEND.code
-    elif calendar.is_workday(date):
-        on_holiday, holiday_name = calendar.get_holiday_detail(date)
-        if holiday_name is not None:
-            # 节日名称为非空，说明是补班，否则就是普通工作日
-            print("{}是补班日".format(judge_date))
-            return DATATYPE.WORKING_HOLIDAY.code + "-" + str(holiday_name)
-        else:
-            return DATATYPE.WORKDAY.code
-    else:
-        # 理论上不存在没有匹配的情况
-        print("{}没有匹配" .format(judge_date))
-        assert False
+            logger.error(f"{date_str} 没有匹配到任何类型")
+            raise ValueError(f"无法判断日期类型: {date_str}")
 
 
-def combine_sql(current_year, current_date, current_date_type, date_remark):
-    date_remark = re.sub(r"\'", "\'\'", date_remark)
-    # 构建SQL语句
-    sql = (
-        f"INSERT INTO {TARGET_TABLE} VALUES ("
-        f"'{current_year}', "
-        f"'{current_date}', "
-        f"'{current_date_type}', "
-        f"'{date_remark}'"
-        f");\n"
-    )
-    return sql
+class CalendarGenerator:
+    """日历生成器"""
+    
+    def __init__(self, config: Config):
+        """
+        初始化日历生成器
+        
+        Args:
+            config: 配置对象
+        """
+        self.config = config
+        self.date_judge = DateTypeJudge(config)
+    
+    @staticmethod
+    def get_whole_year(year: int) -> List[str]:
+        """
+        获取一年内所有的日期
+        
+        Args:
+            year: 年份
+            
+        Returns:
+            List[str]: 日期字符串列表
+        """
+        begin = datetime.date(year, 1, 1)
+        end = datetime.date(year, 12, 31)
+        delta = datetime.timedelta(days=1)
+        
+        days = []
+        current = begin
+        while current <= end:
+            days.append(current.strftime("%Y-%m-%d"))
+            current += delta
+        
+        return days
+    
+    @staticmethod
+    def ensure_dir_exists(dir_path: str, file_name: str = None) -> str:
+        """
+        确保目录存在，不存在则创建并返回绝对路径
+        
+        Args:
+            dir_path: 目录路径
+            file_name: 文件名（可选）
+            
+        Returns:
+            str: 绝对路径
+        """
+        path = Path(dir_path)
+        path.mkdir(parents=True, exist_ok=True)
+        
+        abs_path = path.absolute()
+        if file_name is not None:
+            abs_path = abs_path / file_name
+        
+        return str(abs_path)
+    
+    def generate_sql(self, year: int, date: str, date_type: str, 
+                    remark: str) -> str:
+        """
+        生成单条SQL插入语句
+        
+        Args:
+            year: 年份
+            date: 日期
+            date_type: 日期类型代码
+            remark: 备注信息
+            
+        Returns:
+            str: SQL语句
+        """
+        # 转义单引号
+        escaped_remark = re.sub(r"'", "''", remark)
+        
+        sql = (
+            f"INSERT INTO {self.config.table_name} VALUES ("
+            f"'{year}', "
+            f"'{date}', "
+            f"'{date_type}', "
+            f"'{escaped_remark}'"
+            f");\n"
+        )
+        return sql
+    
+    def generate(self) -> None:
+        """生成工作日历SQL和CSV文件"""
+        logger.info(f"开始生成 {self.config.target_year} 年的工作日历数据")
+        
+        # 初始化数据容器
+        df = pd.DataFrame(columns=['YEAR', 'CALENDAR_DATE', 'DATE_TYPE', 'COMMENTS'])
+        sql_statements = []
+        
+        # 获取全年日期并处理
+        dates = self.get_whole_year(self.config.target_year)
+        for index, date_str in enumerate(dates):
+            date_type, remark = self.date_judge.judge_date_type(date_str)
+            
+            # 生成SQL
+            sql = self.generate_sql(
+                self.config.target_year, 
+                date_str, 
+                date_type, 
+                remark
+            )
+            sql_statements.append(sql)
+            
+            # 添加到DataFrame
+            df.loc[index] = [self.config.target_year, date_str, date_type, remark]
+        
+        # 保存文件
+        self._save_files(sql_statements, df)
+        
+        logger.info("生成完成！")
+        logger.info(f"\n{df}")
+    
+    def _save_files(self, sql_statements: List[str], df: pd.DataFrame) -> None:
+        """
+        保存SQL和CSV文件
+        
+        Args:
+            sql_statements: SQL语句列表
+            df: 数据DataFrame
+        """
+        file_base_path = self.ensure_dir_exists(
+            self.config.save_path,
+            f"{self.config.target_year}Day"
+        )
+        
+        # 保存SQL文件
+        sql_file = f"{file_base_path}.sql"
+        with open(sql_file, 'w', encoding='utf-8') as f:
+            f.writelines(sql_statements)
+        logger.info(f"SQL文件已保存: {sql_file}")
+        
+        # 保存CSV文件
+        csv_file = f"{file_base_path}.csv"
+        df.to_csv(csv_file, index=False, encoding='utf-8-sig')
+        logger.info(f"CSV文件已保存: {csv_file}")
+
+
+def main():
+    """主函数"""
+    try:
+        # 加载配置
+        config = ConfigLoader.load_config()
+        
+        # 创建生成器并执行
+        generator = CalendarGenerator(config)
+        generator.generate()
+        
+    except Exception as e:
+        logger.error(f"程序执行失败: {e}")
+        raise
 
 
 if __name__ == "__main__":
-    dataf = pd.DataFrame(columns=['YEAR', 'CALENDAR_DATE', 'DATE_TYPE', 'COMMENTS'])
-    save_sql = ""
-    for index, one_date in enumerate(get_whole_year()):
-        data_param = judge_date_type(one_date).split('-')
-        if len(data_param) > 1:
-            save_sql = save_sql + combine_sql(TARGET_YEAR, one_date, data_param[0], data_param[1])
-            dataf.loc[index] = [TARGET_YEAR, one_date, data_param[0], data_param[1]]
-        else:
-            save_sql = save_sql + combine_sql(TARGET_YEAR, one_date, data_param[0], "")
-            dataf.loc[index] = [TARGET_YEAR, one_date, data_param[0], ""]
-    file_path_saver = "{FILE_FULL_PATH}".format(
-        FILE_FULL_PATH=check_dir_exist(TARGET_SAVE_PATH, "{}Day".format(TARGET_YEAR)))
-    with open("{}.sql".format(file_path_saver), 'w') as f:
-        f.write(save_sql)
-    dataf.to_csv("{}.csv".format(file_path_saver), index=False)
-    print(dataf)
+    main()

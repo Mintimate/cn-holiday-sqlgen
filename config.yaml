@@ -1,0 +1,32 @@
+# 中国节假日SQL生成器配置文件
+
+# 数据库配置
+database:
+  # 目标数据库表名
+  table_name: "WORK_CALENDAR"
+
+# 生成配置
+generation:
+  # 脚本生成的目标年份
+  target_year: 2026
+  
+  # 生成文件的保存路径（相对路径或绝对路径）
+  save_path: "work_calendar"
+
+# 日期类型编码配置
+date_types:
+  workday:
+    code: "0"
+    description: "普通工作日"
+  
+  weekend:
+    code: "3"
+    description: "普通周末"
+  
+  holiday:
+    code: "1"
+    description: "节日假期"
+  
+  working_holiday:
+    code: "2"
+    description: "节日补班"
