@@ -21,42 +21,104 @@
 3. 对每个日期执行判断，并根据结果生成相应的 SQL 语句。
 4. 将 SQL 语句写入文件，并将 DataFrame 数据输出为 CSV 文件。
 
-Mermaid流程图：
 ```mermaid
-graph TD;
-    A[开始] --> B{配置参数};
-    B -->|加载配置| C[创建文件夹];
-    C --> D{获取全年日期};
-    D --> E[遍历每个日期];
-    E --> F{判断日期类型};
-    F -->|普通工作日| G[记录日期类型];
-    F -->|普通周末| H[记录日期类型];
-    F -->|节日假期| I[记录日期类型及备注];
-    F -->|节日补班| J[记录日期类型及备注];
-    G --> K[生成SQL语句];
-    H --> K;
-    I --> K;
-    J --> K;
-    K --> L{保存至文件};
-    L -->|保存SQL文件| M[完成];
-    L -->|保存CSV文件| M;
-    M --> N[结束];
-
-    classDef startEnd fill:#f9d6c1,stroke:#333,stroke-width:4px;
-    classDef config fill:#e5f5f5,stroke:#333,stroke-width:4px;
-    classDef loop fill:#fff2cc,stroke:#333,stroke-width:4px;
-    classDef process fill:#e2f5f5,stroke:#333,stroke-width:4px;
-    classDef save fill:#f5f5e2,stroke:#333,stroke-width:4px;
-
-    class A startEnd;
-    class B config;
-    class E,D loop;
-    class G,H,I,J,K process;
-    class L save;
+graph TD
+    A([开始]) --> B[加载配置文件]
+    B --> C[初始化日历生成器]
+    C --> D[获取全年日期列表]
+    D --> E[遍历每个日期]
+    E --> F{判断日期类型}
+    F -->|工作日| G[记录: 普通工作日]
+    F -->|周末| H[记录: 普通周末]
+    F -->|节假日| I[记录: 节日假期 + 名称]
+    F -->|补班| J[记录: 节日补班 + 名称]
+    G --> K[生成SQL语句]
+    H --> K
+    I --> K
+    J --> K
+    K --> L[添加到数据集]
+    L --> M{是否还有日期?}
+    M -->|是| E
+    M -->|否| N[保存SQL文件]
+    N --> O[保存CSV文件]
+    O --> P[输出统计信息]
+    P --> Q([结束])
+    
+    %% 样式定义
+    classDef startEndStyle fill:#e1f5e1,stroke:#4caf50,stroke-width:3px,color:#2e7d32
+    classDef configStyle fill:#e3f2fd,stroke:#2196f3,stroke-width:2px,color:#1565c0
+    classDef processStyle fill:#fff3e0,stroke:#ff9800,stroke-width:2px,color:#e65100
+    classDef decisionStyle fill:#f3e5f5,stroke:#9c27b0,stroke-width:2px,color:#6a1b9a
+    classDef dataStyle fill:#fce4ec,stroke:#e91e63,stroke-width:2px,color:#c2185b
+    classDef saveStyle fill:#e0f2f1,stroke:#009688,stroke-width:2px,color:#00695c
+    
+    %% 应用样式
+    class A,Q startEndStyle
+    class B,C configStyle
+    class D,E,K,L,P processStyle
+    class F,M decisionStyle
+    class G,H,I,J dataStyle
+    class N,O saveStyle
 ```
 
+## 项目结构
 
-## 注意
-需要注意：由于次年的节假日安排，取决于国务院发布的日程。 一般是每年的`11月前后`发布新版本`chinesecalendar`。
+```
+cn-holiday-sqlgen/
+├── config.yaml          # 配置文件
+├── main.py             # 主程序
+├── requirements.txt    # 依赖列表
+├── README.md          # 说明文档
+└── work_calendar/     # 输出目录（自动创建）
+    ├── 2024Day.sql    # SQL文件
+    └── 2024Day.csv    # CSV文件
+```
 
-如：2023年的数据，需要在2022年11月以后才可获取到。
+## 代码架构
+
+项目采用面向对象设计，主要包含以下类：
+
+- `ConfigLoader`: 配置加载器，负责读取和解析YAML配置
+- `DateTypeJudge`: 日期类型判断器，判断日期属于哪种类型
+- `CalendarGenerator`: 日历生成器，协调整个生成流程
+- `Config`: 配置数据类
+- `DateTypeConfig`: 日期类型配置数据类
+
+## 注意事项
+
+⚠️ **重要提示**：
+
+1. **网络环境要求**：程序需要在公网环境运行，以便同步最新的法定节假日数据
+2. **依赖库更新**：建议定期更新 `chinesecalendar` 库以获取最新数据
+   ```bash
+   pip install -U chinesecalendar
+   ```
+3. **数据可用性**：次年的节假日安排取决于国务院发布的日程，通常在每年 **11月前后** 发布新版本
+   - 例如：2025年的数据需要在2024年11月以后才能获取
+
+## 更新日志
+
+### v2.0 (2025-11-04)
+- ✨ 重构代码，符合PEP8规范
+- ✨ 引入YAML配置文件
+- ✨ 采用面向对象设计
+- ✨ 添加完善的日志系统
+- ✨ 使用dataclass简化配置管理
+- ✨ 改进错误处理机制
+- 📝 更新文档
+
+### v1.0 (2024-07-26)
+- 🎉 初始版本发布
+
+## 许可证
+
+本项目采用 MIT 许可证。详见 [LICENSE](LICENSE) 文件。
+
+## 贡献
+
+欢迎提交 Issue 和 Pull Request！
+
+## 作者
+
+- **Mintimate**
+- 创建日期：2024-07-26
