@@ -19,3 +19,20 @@ $:
           script: 
             - pip3 install -r requirements.txt
             - echo "Done"
+
+
+main:
+  push:
+    - name: "推送镜像"
+      imports:
+        - https://cnb.cool/Mintimate/secret/-/blob/main/SyncToGitHub.yml
+      stages:
+        - name: 自动同步代码
+          image: tencentcom/git-sync
+          settings:
+            target_url: https://github.com/Mintimate/cn-holiday-sqlgen.git
+            auth_type: https
+            username: ${GIT_USERNAME}
+            password: ${GIT_ACCESS_TOKEN}
+            branch: main
+            force: true
